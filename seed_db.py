@@ -1,34 +1,28 @@
-"""Seed the database with rooms and handle migrations. Run on deployment."""
-import os
+"""Seed the VCA database tables. Run on deployment."""
 from app import app
-from models import db, Room
+from models import db, Room, Checklist
 from rooms_data import get_all_rooms
-from sqlalchemy import text, inspect
 
 
 def seed():
     with app.app_context():
+        # Crea las tablas vca_rooms, vca_checklists, vca_receptionists
+        # sin tocar las tablas del sistema anterior (rooms, checklists, receptionists)
         db.create_all()
+        print("Tablas VCA verificadas.")
 
-        # Migration: add cambio_sabanas column if missing
-        inspector = inspect(db.engine)
-        columns = [c['name'] for c in inspector.get_columns('checklists')]
-        if 'cambio_sabanas' not in columns:
-            db.session.execute(text(
-                "ALTER TABLE checklists ADD COLUMN cambio_sabanas VARCHAR(5) NOT NULL DEFAULT ''"
-            ))
-            db.session.commit()
-            print("Added cambio_sabanas column.")
-
-        # Seed rooms if empty
+        # Insertar habitaciones solo si la tabla está vacía
         if Room.query.first() is None:
-            rooms = get_all_rooms()
-            for code, building in rooms:
+            vca_rooms = get_all_rooms()
+            for code, building in vca_rooms:
                 db.session.add(Room(code=code, building=building))
             db.session.commit()
-            print(f"Seeded {len(rooms)} rooms.")
+            n_modules = len(set(b for _, b in vca_rooms))
+            print(f"Insertadas {len(vca_rooms)} habitaciones VCA en {n_modules} módulos.")
         else:
-            print("Rooms already seeded.")
+            print(f"Habitaciones VCA ya presentes ({Room.query.count()}). Sin cambios.")
+
+        print("Listo.")
 
 
 if __name__ == '__main__':

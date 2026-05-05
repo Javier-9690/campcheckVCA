@@ -3,6 +3,7 @@ import io
 import re
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -13,23 +14,23 @@ from sqlalchemy import func, cast, Date
 
 load_dotenv()
 
+SANTIAGO_TZ = ZoneInfo('America/Santiago')
+
+def now_santiago():
+    return datetime.now(SANTIAGO_TZ).replace(tzinfo=None)
+
 app = Flask(__name__)
 
-# Database config
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///camp_checklist.db')
 if database_url.startswith('postgres://'):
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True
-}
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'pool_pre_ping': True}
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
 
-# Delete password (configurable via env var)
 DELETE_PASSWORD = os.environ.get('DELETE_PASSWORD', 'admin2026')
-
 MODULE_NAME_RE = re.compile(r'^[A-Z0-9\-]+$')
 
 OKX_FIELDS = [
@@ -42,7 +43,7 @@ OKX_LABELS = {
     'luz_central': 'Luz Central',
     'sensor': 'Sensor',
     'cobertores': 'Cobertores',
-    'cambio_sabanas': 'Cambio Sábanas',
+    'cambio_sabanas': 'Cambio Sabanas',
     'velador': 'Velador',
     'almohada': 'Almohada',
     'extractor': 'Extractor',
@@ -58,12 +59,9 @@ OKX_LABELS = {
 db.init_app(app)
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
-
 def seed_default_rooms_if_empty():
     if Room.query.first() is not None:
         return
-
     for code, building in get_all_rooms():
         db.session.add(Room(code=code, building=building))
     db.session.commit()
@@ -78,45 +76,25 @@ def get_available_modules():
         Room.building,
         func.count(Room.id).label('room_count')
     ).group_by(Room.building).all()
-
-    counts_by_building = {
-        row.building: row.room_count
-        for row in rows
-    }
-    ordered_names = sort_buildings(list(counts_by_building.keys()))
-    return [
-        {'building': building, 'room_count': counts_by_building[building]}
-        for building in ordered_names
-    ]
+    counts = {row.building: row.room_count for row in rows}
+    ordered = sort_buildings(list(counts.keys()))
+    return [{'building': b, 'room_count': counts[b]} for b in ordered]
 
 
 def get_dashboard_range():
-    """Resolve dashboard date filtering."""
     selected_date = (request.args.get('selected_date') or '').strip()
     days = request.args.get('days', 7, type=int)
-
     if selected_date:
         try:
             start_date = datetime.strptime(selected_date, '%Y-%m-%d')
             end_date = start_date + timedelta(days=1)
-            return {
-                'start_date': start_date,
-                'end_date': end_date,
-                'selected_date': selected_date,
-                'days': None,
-                'label': selected_date
-            }
+            return {'start_date': start_date, 'end_date': end_date,
+                    'selected_date': selected_date, 'days': None, 'label': selected_date}
         except ValueError:
             pass
-
-    start_date = datetime.utcnow() - timedelta(days=days)
-    return {
-        'start_date': start_date,
-        'end_date': None,
-        'selected_date': '',
-        'days': days,
-        'label': f'Últimos {days} día(s)'
-    }
+    start_date = now_santiago() - timedelta(days=days)
+    return {'start_date': start_date, 'end_date': None,
+            'selected_date': '', 'days': days, 'label': f'Ultimos {days} dia(s)'}
 
 
 with app.app_context():
@@ -140,12 +118,7 @@ def checklist_page(building):
         return redirect(url_for('index'))
     receptionist = Receptionist.query.get_or_404(receptionist_id)
     rooms = Room.query.filter_by(building=building).order_by(Room.code).all()
-    return render_template(
-        'checklist.html',
-        rooms=rooms,
-        building=building,
-        receptionist=receptionist
-    )
+    return render_template('checklist.html', rooms=rooms, building=building, receptionist=receptionist)
 
 
 @app.route('/dashboard')
@@ -176,72 +149,46 @@ def api_create_module():
     data = request.get_json(silent=True) or {}
     building = normalize_module_name(data.get('building'))
     room_count = data.get('room_count', 0)
-
     try:
         room_count = int(room_count)
     except (TypeError, ValueError):
         room_count = 0
-
     if not building:
-        return jsonify({'error': 'El nombre del módulo es requerido'}), 400
+        return jsonify({'error': 'El nombre del modulo es requerido'}), 400
     if not MODULE_NAME_RE.fullmatch(building):
-        return jsonify({'error': 'Use solo letras, números o guion en el módulo'}), 400
+        return jsonify({'error': 'Use solo letras, numeros o guion en el modulo'}), 400
     if room_count <= 0:
         return jsonify({'error': 'La cantidad de habitaciones debe ser mayor a 0'}), 400
     if room_count > 500:
         return jsonify({'error': 'La cantidad de habitaciones no puede superar 500'}), 400
     if Room.query.filter_by(building=building).first():
-        return jsonify({'error': 'Ese módulo ya existe'}), 400
-
+        return jsonify({'error': 'Ese modulo ya existe'}), 400
     width = max(2, len(str(room_count)))
     new_rooms = []
     for number in range(1, room_count + 1):
         code = f'{building}{str(number).zfill(width)}'
         if Room.query.filter_by(code=code).first():
-            return jsonify({'error': f'Ya existe una habitación con código {code}'}), 400
+            return jsonify({'error': f'Ya existe una habitacion con codigo {code}'}), 400
         new_rooms.append(Room(code=code, building=building))
-
     db.session.add_all(new_rooms)
     db.session.commit()
-
-    return jsonify({
-        'ok': True,
-        'building': building,
-        'room_count': room_count
-    }), 201
+    return jsonify({'ok': True, 'building': building, 'room_count': room_count}), 201
 
 
 @app.route('/api/modules/<building>', methods=['DELETE'])
 def api_delete_module(building):
     building = normalize_module_name(building)
     data = request.get_json(silent=True) or {}
-    password = data.get('password', '')
-
-    if password != DELETE_PASSWORD:
+    if data.get('password', '') != DELETE_PASSWORD:
         return jsonify({'error': 'Clave incorrecta'}), 403
-
     rooms = Room.query.filter_by(building=building).all()
     if not rooms:
-        return jsonify({'error': 'El módulo no existe'}), 404
-
-    room_ids = [room.id for room in rooms]
-    deleted_checklists = 0
-    if room_ids:
-        deleted_checklists = Checklist.query.filter(
-            Checklist.room_id.in_(room_ids)
-        ).delete(synchronize_session=False)
-
-    deleted_rooms = Room.query.filter(
-        Room.id.in_(room_ids)
-    ).delete(synchronize_session=False)
-
+        return jsonify({'error': 'El modulo no existe'}), 404
+    room_ids = [r.id for r in rooms]
+    deleted_cl = Checklist.query.filter(Checklist.room_id.in_(room_ids)).delete(synchronize_session=False)
+    deleted_r = Room.query.filter(Room.id.in_(room_ids)).delete(synchronize_session=False)
     db.session.commit()
-    return jsonify({
-        'ok': True,
-        'building': building,
-        'deleted_rooms': deleted_rooms,
-        'deleted_checklists': deleted_checklists
-    })
+    return jsonify({'ok': True, 'building': building, 'deleted_rooms': deleted_r, 'deleted_checklists': deleted_cl})
 
 
 # ── API: Receptionists ────────────────────────────────────────────────────
@@ -293,16 +240,8 @@ def api_delete_receptionist(rec_id):
 
 # ── API: Checklist ─────────────────────────────────────────────────────────
 
-@app.route('/api/checklist', methods=['POST'])
-def api_create_checklist():
-    data = request.json
-    room_id = data.get('room_id')
-    receptionist_id = data.get('receptionist_id')
-
-    if not room_id or not receptionist_id:
-        return jsonify({'error': 'room_id y receptionist_id son requeridos'}), 400
-
-    checklist = Checklist(
+def checklist_from_data(data, room_id, receptionist_id):
+    return Checklist(
         room_id=room_id,
         receptionist_id=receptionist_id,
         estado=data.get('estado', ''),
@@ -322,6 +261,16 @@ def api_create_checklist():
         closet=data.get('closet', ''),
         observaciones=data.get('observaciones', '')
     )
+
+
+@app.route('/api/checklist', methods=['POST'])
+def api_create_checklist():
+    data = request.json
+    room_id = data.get('room_id')
+    receptionist_id = data.get('receptionist_id')
+    if not room_id or not receptionist_id:
+        return jsonify({'error': 'room_id y receptionist_id son requeridos'}), 400
+    checklist = checklist_from_data(data, room_id, receptionist_id)
     db.session.add(checklist)
     db.session.commit()
     return jsonify(checklist.to_dict()), 201
@@ -329,49 +278,24 @@ def api_create_checklist():
 
 @app.route('/api/checklist/batch', methods=['POST'])
 def api_create_checklist_batch():
-    """Save multiple room checklists at once."""
     data = request.json
     items = data.get('items', [])
     receptionist_id = data.get('receptionist_id')
-
     if not items or not receptionist_id:
         return jsonify({'error': 'items y receptionist_id son requeridos'}), 400
-
     saved = []
     for item in items:
-        checklist = Checklist(
-            room_id=item['room_id'],
-            receptionist_id=receptionist_id,
-            estado=item.get('estado', ''),
-            luz_central=item.get('luz_central', ''),
-            sensor=item.get('sensor', ''),
-            cobertores=item.get('cobertores', ''),
-            cambio_sabanas=item.get('cambio_sabanas', ''),
-            velador=item.get('velador', ''),
-            almohada=item.get('almohada', ''),
-            extractor=item.get('extractor', ''),
-            estufa=item.get('estufa', ''),
-            basurero=item.get('basurero', ''),
-            humidificador=item.get('humidificador', ''),
-            cortina=item.get('cortina', ''),
-            blackout=item.get('blackout', ''),
-            aseo_general=item.get('aseo_general', ''),
-            closet=item.get('closet', ''),
-            observaciones=item.get('observaciones', '')
-        )
-        db.session.add(checklist)
-        saved.append(checklist)
-
+        cl = checklist_from_data(item, item['room_id'], receptionist_id)
+        db.session.add(cl)
+        saved.append(cl)
     db.session.commit()
     return jsonify({'saved': len(saved)}), 201
 
 
 @app.route('/api/checklist/<int:checklist_id>', methods=['DELETE'])
 def api_delete_checklist(checklist_id):
-    """Delete a checklist record with password verification."""
     data = request.json or {}
-    password = data.get('password', '')
-    if password != DELETE_PASSWORD:
+    if data.get('password', '') != DELETE_PASSWORD:
         return jsonify({'error': 'Clave incorrecta'}), 403
     checklist = Checklist.query.get_or_404(checklist_id)
     db.session.delete(checklist)
@@ -383,72 +307,42 @@ def api_delete_checklist(checklist_id):
 
 @app.route('/api/dashboard/stats')
 def api_dashboard_stats():
-    """Dashboard statistics."""
     date_filter = get_dashboard_range()
     start_date = date_filter['start_date']
     end_date = date_filter['end_date']
 
     is_sqlite = 'sqlite' in app.config['SQLALCHEMY_DATABASE_URI']
-    if is_sqlite:
-        date_expr = func.date(Checklist.created_at)
-    else:
-        date_expr = cast(Checklist.created_at, Date)
+    date_expr = func.date(Checklist.created_at) if is_sqlite else cast(Checklist.created_at, Date)
 
     base_filters = [Checklist.created_at >= start_date]
     if end_date is not None:
         base_filters.append(Checklist.created_at < end_date)
 
     daily = db.session.query(
-        date_expr.label('date'),
-        func.count(Checklist.id).label('count')
-    ).filter(
-        *base_filters
-    ).group_by(
-        date_expr
-    ).order_by(
-        date_expr
-    ).all()
+        date_expr.label('date'), func.count(Checklist.id).label('count')
+    ).filter(*base_filters).group_by(date_expr).order_by(date_expr).all()
 
     by_receptionist = db.session.query(
-        Receptionist.name,
-        func.count(Checklist.id).label('count')
-    ).join(
-        Checklist, Checklist.receptionist_id == Receptionist.id
-    ).filter(
-        *base_filters
-    ).group_by(
-        Receptionist.name
-    ).order_by(
-        func.count(Checklist.id).desc()
-    ).all()
+        Receptionist.name, func.count(Checklist.id).label('count')
+    ).join(Checklist, Checklist.receptionist_id == Receptionist.id
+    ).filter(*base_filters).group_by(Receptionist.name
+    ).order_by(func.count(Checklist.id).desc()).all()
 
     issues_data = {}
     for field in OKX_FIELDS:
-        count = Checklist.query.filter(
-            *base_filters,
-            getattr(Checklist, field) == 'x'
-        ).count()
+        count = Checklist.query.filter(*base_filters, getattr(Checklist, field) == 'x').count()
         issues_data[OKX_LABELS[field]] = count
 
     total_checklists = Checklist.query.filter(*base_filters).count()
-
     total_rooms = Room.query.count()
     rooms_checked = db.session.query(
         func.count(func.distinct(Checklist.room_id))
-    ).filter(
-        *base_filters
-    ).scalar()
+    ).filter(*base_filters).scalar()
 
     by_building = db.session.query(
-        Room.building,
-        func.count(Checklist.id).label('count')
-    ).join(
-        Checklist, Checklist.room_id == Room.id
-    ).filter(
-        *base_filters
-    ).group_by(
-        Room.building
-    ).all()
+        Room.building, func.count(Checklist.id).label('count')
+    ).join(Checklist, Checklist.room_id == Room.id
+    ).filter(*base_filters).group_by(Room.building).all()
 
     by_building_map = {row.building: row.count for row in by_building}
     ordered_buildings = sort_buildings(list(by_building_map.keys()))
@@ -460,10 +354,7 @@ def api_dashboard_stats():
         'total_checklists': total_checklists,
         'total_rooms': total_rooms,
         'rooms_checked': rooms_checked or 0,
-        'by_building': [
-            {'building': building, 'count': by_building_map[building]}
-            for building in ordered_buildings
-        ],
+        'by_building': [{'building': b, 'count': by_building_map[b]} for b in ordered_buildings],
         'selected_date': date_filter['selected_date'],
         'days': date_filter['days'],
         'filter_label': date_filter['label']
@@ -474,7 +365,6 @@ def api_dashboard_stats():
 
 @app.route('/api/history')
 def api_history():
-    """Get checklist history with filters."""
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 50, type=int)
     building = request.args.get('building', '')
@@ -483,7 +373,6 @@ def api_history():
     date_to = request.args.get('date_to', '')
 
     query = Checklist.query.join(Room).join(Receptionist)
-
     if building:
         query = query.filter(Room.building == building)
     if receptionist_id:
@@ -495,7 +384,6 @@ def api_history():
 
     total = query.count()
     checklists = query.order_by(Checklist.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
-
     return jsonify({
         'items': [c.to_dict() for c in checklists],
         'total': total,
@@ -506,14 +394,12 @@ def api_history():
 
 @app.route('/api/history/export')
 def api_history_export():
-    """Export history to Excel (.xlsx)."""
     building = request.args.get('building', '')
     receptionist_id = request.args.get('receptionist_id', type=int)
     date_from = request.args.get('date_from', '')
     date_to = request.args.get('date_to', '')
 
     query = Checklist.query.join(Room).join(Receptionist)
-
     if building:
         query = query.filter(Room.building == building)
     if receptionist_id:
@@ -530,8 +416,8 @@ def api_history_export():
     ws.title = 'Chequeos'
 
     headers = [
-        'Fecha', 'Hora', 'Habitación', 'Módulo', 'Recepcionista', 'Estado',
-        'Luz Central', 'Sensor', 'Cobertores', 'Cambio Sábanas',
+        'Fecha', 'Hora', 'Habitacion', 'Modulo', 'Recepcionista', 'Estado',
+        'Luz Central', 'Sensor', 'Cobertores', 'Cambio Sabanas',
         'Velador', 'Almohada', 'Extractor', 'Estufa', 'Basurero',
         'Humidificador', 'Cortina', 'Blackout', 'Aseo General', 'Closet',
         'Observaciones'
@@ -607,13 +493,13 @@ def api_history_export():
         ws.column_dimensions[get_column_letter(col)].width = min(max_len + 3, 30)
 
     ws.freeze_panes = 'A2'
-    ws.auto_filter.ref = f'A1:{get_column_letter(len(headers))}{len(checklists) + 1}'
+    ws.auto_filter.ref = 'A1:' + get_column_letter(len(headers)) + str(len(checklists) + 1)
 
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
 
-    filename = f'chequeos_vca_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'
+    filename = 'chequeos_vca_' + now_santiago().strftime('%Y%m%d_%H%M') + '.xlsx'
     return send_file(
         output,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

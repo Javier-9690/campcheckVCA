@@ -1,78 +1,60 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+SANTIAGO_TZ = ZoneInfo('America/Santiago')
+
+def now_santiago():
+    return datetime.now(SANTIAGO_TZ).replace(tzinfo=None)
 
 db = SQLAlchemy()
 
 
 class Receptionist(db.Model):
-    __tablename__ = 'receptionists'
+    __tablename__ = 'vca_receptionists'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False, unique=True)
     active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=now_santiago)
     checklists = db.relationship('Checklist', backref='receptionist', lazy=True)
 
     def to_dict(self):
-        return {
-            'id': self.id,
-            'name': self.name,
-            'active': self.active
-        }
+        return {'id': self.id, 'name': self.name, 'active': self.active}
 
 
 class Room(db.Model):
-    __tablename__ = 'rooms'
+    __tablename__ = 'vca_rooms'
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(20), nullable=False, unique=True)
     building = db.Column(db.String(20), nullable=False)
     checklists = db.relationship('Checklist', backref='room', lazy=True)
 
     def to_dict(self):
-        return {
-            'id': self.id,
-            'code': self.code,
-            'building': self.building
-        }
+        return {'id': self.id, 'code': self.code, 'building': self.building}
 
 
 class Checklist(db.Model):
-    __tablename__ = 'checklists'
+    __tablename__ = 'vca_checklists'
     id = db.Column(db.Integer, primary_key=True)
-    room_id = db.Column(db.Integer, db.ForeignKey('rooms.id'), nullable=False)
-    receptionist_id = db.Column(db.Integer, db.ForeignKey('receptionists.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    room_id = db.Column(db.Integer, db.ForeignKey('vca_rooms.id'), nullable=False)
+    receptionist_id = db.Column(db.Integer, db.ForeignKey('vca_receptionists.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=now_santiago)
 
-    # Estado de la habitación (disponible / ocupada)
     estado = db.Column(db.String(15), nullable=False, default='')
-    # Luz central (ok, x)
     luz_central = db.Column(db.String(5), nullable=False, default='')
-    # Sensor (ok, x)
     sensor = db.Column(db.String(5), nullable=False, default='')
-    # Cobertores (ok, x)
     cobertores = db.Column(db.String(5), nullable=False, default='')
-    # Cambio de sábanas (ok, x)
     cambio_sabanas = db.Column(db.String(5), nullable=False, default='')
-    # Velador (ok, x)
     velador = db.Column(db.String(5), nullable=False, default='')
-    # Almohada (ok, x)
     almohada = db.Column(db.String(5), nullable=False, default='')
-    # Extractor (ok, x)
     extractor = db.Column(db.String(5), nullable=False, default='')
-    # Estufa (ok, x)
     estufa = db.Column(db.String(5), nullable=False, default='')
-    # Basurero (ok, x)
     basurero = db.Column(db.String(5), nullable=False, default='')
-    # Humidificador (ok, x)
     humidificador = db.Column(db.String(5), nullable=False, default='')
-    # Cortina (ok, x)
     cortina = db.Column(db.String(5), nullable=False, default='')
-    # Blackout (ok, x)
     blackout = db.Column(db.String(5), nullable=False, default='')
-    # Aseo general (ok, x)
     aseo_general = db.Column(db.String(5), nullable=False, default='')
-    # Closet (ok, x)
     closet = db.Column(db.String(5), nullable=False, default='')
-    # Observaciones
     observaciones = db.Column(db.Text, default='')
 
     OKX_FIELDS = [
